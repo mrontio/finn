@@ -35,16 +35,69 @@ def is_available() -> bool:
     xsi_path = Path(os.environ["FINN_ROOT"]) / "finn_xsi"
     xsi_so = xsi_path / "xsi.so"
     if not xsi_so.exists():
+        _record_unavailable(
+            f"xsi.so not found at {xsi_so}. Build it with: python -m finn.xsi.setup"
+        )
         return False
 
     # Try loading the modules (this will cache them if successful)
     return _load_modules()
 
 
+def unavailable_reason() -> Optional[str]:
+    """Why the last is_available()/_load_modules() call failed, or None if it did not.
+
+    Callers that cache `xsi if xsi.is_available() else None` lose the ImportError
+    raised by the function wrappers below, and only fail much later with an
+    unhelpful 'NoneType' has no attribute ... -- use this to report the cause.
+    """
+    return _load_error
+
+
 # Cache for loaded modules
 _adapter_module: Optional[Any] = None
 _sim_engine_module: Optional[Any] = None
 _xsi_module: Optional[Any] = None
+
+# Explanation of the most recent load failure, surfaced via unavailable_reason()
+_load_error: Optional[str] = None
+_warned_once = False
+
+
+def _record_unavailable(reason: str) -> None:
+    """Store the reason XSI is unavailable and warn about it once."""
+    global _load_error, _warned_once
+    _load_error = reason
+    if not _warned_once:
+        _warned_once = True
+        logging.warning(f"RTL simulation (XSI) is unavailable: {reason}")
+
+
+def _diagnose_import_error(exc: ImportError, xsi_so: Path) -> str:
+    """Turn a raw finn_xsi ImportError into something actionable."""
+    msg = str(exc)
+
+    # xsi.so is a compiled extension living in the (bind-mounted) checkout, so it
+    # outlives the container that built it. After a base-image Python upgrade the
+    # stale object is still on disk but no longer loadable -- by far the most
+    # common cause, and the least obvious from the raw message.
+    if "Python version mismatch" in msg or "undefined symbol: Py" in msg:
+        return (
+            f"{xsi_so} was compiled for a different Python than the running "
+            f"interpreter ({sys.version.split()[0]}). This usually means the .so was "
+            "built inside an older FINN container and is now stale. Rebuild it with: "
+            "python -m finn.xsi.setup --force"
+        )
+
+    # The simkernel is dlopen'd from the Vivado install rather than linked, so a
+    # missing one means Vivado was never sourced in this shell.
+    if "libxv_simulator_kernel" in msg or "XILINX_VIVADO" in msg:
+        return (
+            f"could not load the Vivado simulation kernel ({msg}). Ensure Vivado is "
+            "sourced and XILINX_VIVADO is set."
+        )
+
+    return f"{msg}. If finn_xsi was never built, run: python -m finn.xsi.setup"
 
 
 def _load_modules() -> bool:
@@ -58,6 +111,9 @@ def _load_modules() -> bool:
     xsi_so = xsi_path / "xsi.so"
 
     if not xsi_so.exists():
+        _record_unavailable(
+            f"xsi.so not found at {xsi_so}. Build it with: python -m finn.xsi.setup"
+        )
         return False
 
     # Temporarily add to path for import
@@ -78,12 +134,11 @@ def _load_modules() -> bool:
 
         return True
     except ImportError as e:
-        # Log the specific import error for debugging
-        logging.debug(f"Failed to import finn_xsi modules: {e}")
+        _record_unavailable(_diagnose_import_error(e, xsi_so))
         return False
     except Exception as e:
         # Catch any unexpected errors during module loading
-        logging.warning(f"Unexpected error loading finn_xsi: {type(e).__name__}: {e}")
+        _record_unavailable(f"unexpected {type(e).__name__} loading finn_xsi: {e}")
         return False
     finally:
         # Remove from path if we added it
@@ -112,7 +167,7 @@ def __getattr__(name: str) -> Any:
 
         def wrapper(*args, **kwargs):
             if not _load_modules():
-                raise ImportError("finn_xsi not available. Run: python -m finn.xsi.setup")
+                raise ImportError(f"finn_xsi not available: {unavailable_reason()}")
             return getattr(_adapter_module, name)(*args, **kwargs)
 
         wrapper.__name__ = name
@@ -131,7 +186,7 @@ class SimEngine:
 
     def __init__(self, *args, **kwargs):
         if not _load_modules():
-            raise ImportError("finn_xsi not available. Run: python -m finn.xsi.setup")
+            raise ImportError(f"finn_xsi not available: {unavailable_reason()}")
         self._engine = _sim_engine_module.SimEngine(*args, **kwargs)
 
     def __getattr__(self, name):
