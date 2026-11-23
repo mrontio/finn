@@ -73,8 +73,8 @@ def _parse_vivado_utilization_report(report_path):
             r"^\|\s*Slice Registers\s*\|",
             r"^\|\s*Register as Flip Flop\s*\|",
         ],
-        # DSP patterns - generic to match DSP48E1, DSP48E2, DSP58, etc.
-        "DSP": [r"^\|\s*DSPs\s*\|", r"^\|\s*DSP48E\d*\s*\|", r"^\|\s*DSP58\s*\|"],
+        # Match DSP header, e.g. "DSPs" for UltraScale+ or "DSP Slices" for Versal.
+        "DSP": [r"^\|\s*DSPs\s*\|", r"^\|\s*DSP Slices\s*\|"],
         # BRAM patterns - provide raw counts, users can calculate combined BRAM if needed
         # RAMB36/FIFO* is the 36K count
         # RAMB18 is the 18K count
