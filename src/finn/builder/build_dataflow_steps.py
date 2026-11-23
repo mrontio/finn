@@ -1383,11 +1383,19 @@ def step_create_stitched_ip(model: ModelWrapper, cfg: DataflowBuildConfig):
             vivado_stitch_proj = model.get_metadata_prop("vivado_stitch_proj")
             ooc_res_dict = parse_ooc_synth_results(vivado_stitch_proj)
             if ooc_res_dict is not None:
+                # Call AnnotateCycles before dataflow_performance !
+                model = model.transform(AnnotateCycles())
                 # Calculate estimated throughput from fmax and cycle analysis
                 estimate_network_performance = model.analysis(dataflow_performance)
+                max_cycles = estimate_network_performance["max_cycles"]
                 n_clock_cycles_per_sec = float(ooc_res_dict["fmax_mhz"]) * (10**6)
-                est_fps = n_clock_cycles_per_sec / estimate_network_performance["max_cycles"]
-                ooc_res_dict["estimated_throughput_fps"] = est_fps
+                if max_cycles > 0:
+                    ooc_res_dict["estimated_throughput_fps"] = n_clock_cycles_per_sec / max_cycles
+                else:
+                    log.warning(
+                        "No cycle estimates available, skipping throughput estimation in "
+                        "OOC synthesis report."
+                    )
 
                 model.set_metadata_prop("res_total_ooc_synth", str(ooc_res_dict))
                 # Write results to report directory
